@@ -119,6 +119,12 @@ export class WOLService {
       const document = ContentParser.parseDocument(html, documentUrl);
       document.url = documentUrl;
 
+      // Normalize non-breaking spaces in the raw HTML/content before formatting
+      // Handles both HTML entity and Unicode NBSP
+      document.content = document.content
+        .replace(/&nbsp;/gi, " ")
+        .replace(/\u00A0/g, " ");
+
       // Format content based on requested format
       if (format === "markdown") {
         document.content = this.convertToMarkdown(document.content);
