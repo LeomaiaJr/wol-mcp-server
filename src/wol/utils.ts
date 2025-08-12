@@ -127,7 +127,7 @@ export class SearchOperatorParser {
   // Validate search operators syntax
   static validateOperators(query: string): boolean {
     // Allow unicode letters/numbers so non-English queries pass validation
-    const validOperators = /^[\p{L}\p{N}\s&+|\/\^%!"\*\?#\\()_-]+$/u;
+    const validOperators = /^[\p{L}\p{N}\s&+|\/\^%!"\*\?#\\()_\-\.:]+$/u;
     return validOperators.test(query);
   }
 
