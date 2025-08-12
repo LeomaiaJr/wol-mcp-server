@@ -282,6 +282,12 @@ export class ContentParser {
         if (!chosen) return;
         const absolute = chosen.startsWith("/") ? `${origin}${chosen}` : chosen;
         $img.attr("src", absolute);
+        // Replace the image element with a clear textual label so LLMs know it's an image link
+        const altText = ($img.attr("alt") || "").trim();
+        const label = altText
+          ? `Image: ${absolute} — ${altText}`
+          : `Image: ${absolute}`;
+        $img.replaceWith(`<p>${label}</p>`);
       });
 
       const contentHTML = ($root.html() || "").trim();
