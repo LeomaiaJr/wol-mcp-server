@@ -173,3 +173,6 @@ dist
 
 
 .DS_Store
+
+# Local test scripts
+scripts/
