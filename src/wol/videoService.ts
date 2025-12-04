@@ -353,6 +353,7 @@ export class VideoService {
 
 	/**
 	 * Convert VTT content to plain text (removing timestamps and formatting)
+	 * Joins subtitle lines into proper sentences/paragraphs for better LLM context usage
 	 */
 	private static vttToPlainText(vttContent: string): string {
 		const lines = vttContent.split("\n");
@@ -397,18 +398,35 @@ export class VideoService {
 			}
 		}
 
-		// Join lines, removing consecutive duplicates
-		const uniqueLines: string[] = [];
+		// Join lines into sentences/paragraphs for better LLM context usage
+		// Only break on sentence-ending punctuation
+		const result: string[] = [];
+		let currentSentence = "";
+
 		for (const line of textLines) {
-			if (
-				uniqueLines.length === 0 ||
-				uniqueLines[uniqueLines.length - 1] !== line
-			) {
-				uniqueLines.push(line);
+			// Skip consecutive duplicates
+			if (currentSentence.endsWith(line)) {
+				continue;
+			}
+
+			// Add space if joining mid-sentence
+			if (currentSentence && !currentSentence.match(/[.!?:;]["']?\s*$/)) {
+				currentSentence += " " + line;
+			} else if (currentSentence) {
+				// Previous ended with punctuation, start new paragraph
+				result.push(currentSentence.trim());
+				currentSentence = line;
+			} else {
+				currentSentence = line;
 			}
 		}
 
-		return uniqueLines.join("\n");
+		// Don't forget the last sentence
+		if (currentSentence) {
+			result.push(currentSentence.trim());
+		}
+
+		return result.join("\n");
 	}
 
 	/**
