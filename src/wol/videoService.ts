@@ -29,9 +29,10 @@ interface PubMediaResponse {
 }
 
 interface ParsedVideoParams {
-	pub: string;
+	id: string;
 	track: string;
 	language: string;
+	type: "pub" | "docid";
 }
 
 export class VideoService {
@@ -48,14 +49,15 @@ export class VideoService {
 		endTime?: number,
 	): Promise<VideoSubtitleResult> {
 		try {
-			// Parse the video URL to extract pub, track, and language
+			// Parse the video URL to extract id, track, language, and type
 			const params = VideoService.parseVideoUrl(url);
 
 			// Fetch video metadata from the pub-media API
 			const metadata = await VideoService.fetchVideoMetadata(
-				params.pub,
+				params.id,
 				params.track,
 				params.language,
+				params.type,
 			);
 
 			// Extract subtitle info from metadata
@@ -142,6 +144,7 @@ export class VideoService {
 	 * Supported URL formats:
 	 * - https://www.jw.org/finder?srcid=jwlshare&wtlocale=T&lank=pub-jwbvod25_41_VIDEO
 	 * - https://www.jw.org/pt/biblioteca/videos/?item=pub-jwbvod25_41_VIDEO&appLanguage=T
+	 * - https://www.jw.org/finder?srcid=share&wtlocale=E&lank=docid-1112024040_1_VIDEO
 	 */
 	private static parseVideoUrl(url: string): ParsedVideoParams {
 		let urlObj: URL;
@@ -175,36 +178,40 @@ export class VideoService {
 			);
 		}
 
-		// Parse lank format: pub-{pub}_{track}_VIDEO
-		// Examples: pub-jwbvod25_41_VIDEO, pub-mwbv_202501_1_VIDEO
-		const lankMatch = lank.match(/^pub-([a-zA-Z0-9]+)_(.+)_VIDEO$/i);
-		if (!lankMatch) {
-			throw createWOLError(
-				"INVALID_QUERY",
-				`Invalid video identifier format: ${lank}. Expected format: pub-{pub}_{track}_VIDEO`,
-				{ url, lank },
-			);
+		// Parse lank formats:
+		// - pub-{pub}_{track}_VIDEO (e.g., pub-jwbvod25_41_VIDEO, pub-jwb-133_1_VIDEO)
+		// - docid-{docid}_{track}_VIDEO (e.g., docid-1112024040_1_VIDEO)
+		// Note: pub IDs can contain hyphens (e.g., jwb-133)
+		const pubMatch = lank.match(/^pub-([a-zA-Z0-9-]+)_(.+)_VIDEO$/i);
+		if (pubMatch) {
+			return { id: pubMatch[1], track: pubMatch[2], language, type: "pub" };
 		}
 
-		const pub = lankMatch[1];
-		const trackPart = lankMatch[2];
+		const docidMatch = lank.match(/^docid-(\d+)_(.+)_VIDEO$/i);
+		if (docidMatch) {
+			return { id: docidMatch[1], track: docidMatch[2], language, type: "docid" };
+		}
 
-		// Track can be simple (41) or complex (202501_1)
-		// For the API, we pass the full track part
-		return { pub, track: trackPart, language };
+		throw createWOLError(
+			"INVALID_QUERY",
+			`Unrecognized video identifier format: ${lank}. Expected formats like pub-{id}_{track}_VIDEO or docid-{id}_{track}_VIDEO`,
+			{ url, lank },
+		);
 	}
 
 	/**
 	 * Fetch video metadata from the pub-media API
 	 */
 	private static async fetchVideoMetadata(
-		pub: string,
+		id: string,
 		track: string,
 		language: string,
+		type: "pub" | "docid",
 	): Promise<PubMediaResponse> {
 		const apiUrl = new URL(JW_PUBMEDIA_API);
 		apiUrl.searchParams.set("output", "json");
-		apiUrl.searchParams.set("pub", pub);
+		// Use 'pub' or 'docid' parameter based on the URL type
+		apiUrl.searchParams.set(type, id);
 		apiUrl.searchParams.set("track", track);
 		apiUrl.searchParams.set("langwritten", language);
 		apiUrl.searchParams.set("txtCMSLang", language);
@@ -217,7 +224,7 @@ export class VideoService {
 		if (!response.ok) {
 			if (response.status === 404) {
 				throw createWOLError("NOT_FOUND", "Video not found", {
-					pub,
+					[type]: id,
 					track,
 					language,
 				});
@@ -226,7 +233,7 @@ export class VideoService {
 				"SERVICE_UNAVAILABLE",
 				`API request failed: ${response.status}`,
 				{
-					pub,
+					[type]: id,
 					track,
 					language,
 				},
