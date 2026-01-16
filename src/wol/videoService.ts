@@ -189,7 +189,12 @@ export class VideoService {
 
 		const docidMatch = lank.match(/^docid-(\d+)_(.+)_VIDEO$/i);
 		if (docidMatch) {
-			return { id: docidMatch[1], track: docidMatch[2], language, type: "docid" };
+			return {
+				id: docidMatch[1],
+				track: docidMatch[2],
+				language,
+				type: "docid",
+			};
 		}
 
 		throw createWOLError(

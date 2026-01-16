@@ -3,12 +3,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { z } from "zod";
 import { WOLService } from "./wol/wolService";
 import { VideoService } from "./wol/videoService";
+import { BibleService } from "./wol/bibleService";
 import {
 	SearchOptionsSchema,
 	DocumentRetrievalSchema,
 	PublicationBrowseSchema,
 	VideoSubtitleSchema,
-	PUBLICATION_NAMES,
+	BibleTextSchema,
+	BIBLE_BOOKS,
 } from "./wol/types";
 
 // Define our MCP agent with WOL tools
@@ -205,6 +207,101 @@ export class MyMCP extends McpAgent {
 				if (result.subtitles.rawVtt) {
 					formattedContent += `\n## Raw VTT\n\n\`\`\`vtt\n${result.subtitles.rawVtt}\n\`\`\``;
 				}
+
+				return { content: [{ type: "text", text: formattedContent }] };
+			},
+		);
+
+		// wol_get_bible_text
+		this.server.tool(
+			"wol_get_bible_text",
+			`Retrieve Bible text from the Study Edition (nwtsty). Returns the text along with study notes, cross-references to other Bible verses, related videos/media, and links to supporting publications (Insight on the Scriptures, Watchtower articles, Awake!, etc.) that explain and expand on the Bible text. Supports multiple languages.
+
+Examples:
+- Single verse: { book: 43, chapter: 3, verseStart: 16 } → John 3:16
+- Verse range: { book: 43, chapter: 3, verseStart: 16, verseEnd: 18 } → John 3:16-18
+- Entire chapter: { book: 1, chapter: 1 } → Genesis 1 (all verses)
+- Different language: { book: 43, chapter: 3, verseStart: 16, language: "pt" } → João 3:16 (Portuguese)
+
+Note: Verse ranges are limited to a single chapter. For multiple chapters, make separate requests.
+
+Book numbers: 1=Genesis, 2=Exodus... 19=Psalms, 20=Proverbs... 40=Matthew, 41=Mark, 42=Luke, 43=John... 66=Revelation`,
+			BibleTextSchema.shape,
+			async (args: z.infer<typeof BibleTextSchema>) => {
+				const validated = BibleTextSchema.parse(args);
+				const result = await BibleService.getBibleText({
+					book: validated.book,
+					chapter: validated.chapter,
+					verseStart: validated.verseStart,
+					verseEnd: validated.verseEnd,
+					language: validated.language,
+					includeStudyNotes: validated.includeStudyNotes,
+					includeCrossReferences: validated.includeCrossReferences,
+					includeMedia: validated.includeMedia,
+					includeIndexes: validated.includeIndexes,
+				});
+
+				let formattedContent = `# ${result.reference}\n\n`;
+				formattedContent += `Book: ${result.book.name} (Book ${result.book.number})\n`;
+				formattedContent += `Chapter: ${result.chapter}\n`;
+				formattedContent += `Language: ${result.language}\n`;
+				formattedContent += `URL: ${result.url}\n`;
+				formattedContent += `\n---\n\n`;
+
+				// Format verses
+				formattedContent += `## Verses\n\n`;
+				for (const verse of result.verses) {
+					formattedContent += `**${verse.number}** ${verse.text}\n\n`;
+
+					// Study notes
+					if (verse.studyNotes && verse.studyNotes.length > 0) {
+						formattedContent += `  📖 **Study Notes:**\n`;
+						for (const note of verse.studyNotes) {
+							formattedContent += `  - **${note.phrase}**: ${note.explanation}`;
+							if (note.references && note.references.length > 0) {
+								formattedContent += ` (${note.references.join("; ")})`;
+							}
+							formattedContent += `\n`;
+						}
+						formattedContent += `\n`;
+					}
+
+					// Cross references
+					if (verse.crossReferences && verse.crossReferences.length > 0) {
+						formattedContent += `  🔗 **Cross-References:** ${verse.crossReferences.join("; ")}\n\n`;
+					}
+
+					// Media
+					if (verse.media && verse.media.length > 0) {
+						formattedContent += `  🎬 **Related Media:**\n`;
+						for (const media of verse.media) {
+							formattedContent += `  - ${media.title}`;
+							if (media.timestamp) {
+								formattedContent += ` (${media.timestamp})`;
+							}
+							formattedContent += `\n    ${media.url}\n`;
+						}
+						formattedContent += `\n`;
+					}
+
+					// Indexes
+					if (verse.indexes && verse.indexes.length > 0) {
+						formattedContent += `  📚 **Related Publications:**\n`;
+						for (const idx of verse.indexes) {
+							formattedContent += `  - ${idx.title} (${idx.publication})\n    ${idx.url}\n`;
+						}
+						formattedContent += `\n`;
+					}
+
+					// Footnotes
+					if (verse.footnotes && verse.footnotes.length > 0) {
+						formattedContent += `  📝 **Footnotes:** ${verse.footnotes.map((f) => f.marker).join(", ")}\n\n`;
+					}
+				}
+
+				// Add book reference at the end
+				formattedContent += `\n---\n\n`;
+				formattedContent += `**Book Reference:** ${BIBLE_BOOKS[result.book.number]?.name || "Unknown"} has ${BIBLE_BOOKS[result.book.number]?.chapters || "?"} chapters.\n`;
 
 				return { content: [{ type: "text", text: formattedContent }] };
 			},
