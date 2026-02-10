@@ -215,7 +215,7 @@ export class MyMCP extends McpAgent {
 		// wol_get_bible_text
 		this.server.tool(
 			"wol_get_bible_text",
-			`Retrieve Bible text from the Study Edition (nwtsty). Returns the text along with study notes, cross-references to other Bible verses, related videos/media, and links to supporting publications (Insight on the Scriptures, Watchtower articles, Awake!, etc.) that explain and expand on the Bible text. Supports multiple languages.
+			`Retrieve Bible text from the Study Edition (nwtsty). Returns the text along with study notes, cross-references to other Bible verses, related videos/media, and comprehensive links to supporting publications from the Index to Bible Publications that explain and expand on the Bible text. Supports multiple languages.
 
 Examples:
 - Single verse: { book: 43, chapter: 3, verseStart: 16 } → John 3:16

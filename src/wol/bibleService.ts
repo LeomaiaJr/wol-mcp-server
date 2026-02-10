@@ -35,6 +35,22 @@ function resolveWolConfig(language: string | undefined): {
 	return { lp, rev, lang: norm };
 }
 
+// Regex to split "Publication Name, pp. 123" into publication and detail.
+// Detail starts with: p./pp., article(s), lesson(s), section(s), chap.(s), or Portuguese equivalents.
+const DETAIL_RE =
+	/^(.*?)\s*,?\s*\b(pp?\.\s|articles?\s|lessons?\s|sections?\s|chaps?\.\s|artigos?\s|li[çc][ãa]o\s|li[çc][õo]es\s|se[çc][ãa]o\s|se[çc][õo]es\s)/i;
+
+function splitPubDetail(text: string): { pubName: string; detail: string } {
+	const m = text.match(DETAIL_RE);
+	if (m) {
+		const pubName = m[1].trim().replace(/,+$/, "");
+		const detailStart = m[0].length - m[2].length;
+		const detail = text.substring(detailStart).trim().replace(/,+$/, "");
+		return { pubName, detail };
+	}
+	return { pubName: text.trim().replace(/,+$/, ""), detail: "" };
+}
+
 export class BibleService {
 	private static readonly REQUEST_TIMEOUT = 30000;
 	private static readonly MAX_RETRIES = 3;
@@ -118,6 +134,12 @@ export class BibleService {
 		return url;
 	}
 
+	private static buildIndexUrl(book: number, language: string): string {
+		const { lp, rev, lang } = resolveWolConfig(language);
+		const docId = book <= 39 ? 1204389 + book : 1204390 + book;
+		return `${WOL_BASE_URL}/${lang}/wol/d/${rev}/lp-${lp}/${docId}`;
+	}
+
 	static async getBibleText(options: {
 		book: number;
 		chapter: number;
@@ -159,10 +181,21 @@ export class BibleService {
 		}
 
 		const url = BibleService.buildBibleUrl(book, chapter, language);
-		const response = await BibleService.fetchWithRetry(url);
+
+		// Fetch Bible text and Index page in parallel
+		const [response, indexHtml] = await Promise.all([
+			BibleService.fetchWithRetry(url),
+			includeIndexes
+				? BibleService.fetchWithRetry(
+						BibleService.buildIndexUrl(book, language),
+					)
+						.then((r) => r.text())
+						.catch(() => null)
+				: Promise.resolve(null),
+		]);
 		const html = await response.text();
 
-		return BibleService.parseBibleContent(html, {
+		const result = BibleService.parseBibleContent(html, {
 			book,
 			chapter,
 			verseStart,
@@ -172,8 +205,26 @@ export class BibleService {
 			includeStudyNotes,
 			includeCrossReferences,
 			includeMedia,
-			includeIndexes,
 		});
+
+		// Merge index data from the Index to Bible Publications page
+		if (includeIndexes && indexHtml) {
+			const indexMap = BibleService.parseIndexPage(
+				indexHtml,
+				book,
+				chapter,
+				verseStart,
+				verseEnd,
+			);
+			for (const verse of result.verses) {
+				const indexes = indexMap.get(verse.number);
+				if (indexes && indexes.length > 0) {
+					verse.indexes = indexes;
+				}
+			}
+		}
+
+		return result;
 	}
 
 	private static parseBibleContent(
@@ -188,7 +239,6 @@ export class BibleService {
 			includeStudyNotes: boolean;
 			includeCrossReferences: boolean;
 			includeMedia: boolean;
-			includeIndexes: boolean;
 		},
 	): BibleTextResult {
 		const $ = cheerio.load(html);
@@ -202,7 +252,6 @@ export class BibleService {
 			includeStudyNotes,
 			includeCrossReferences,
 			includeMedia,
-			includeIndexes,
 		} = options;
 
 		const bookInfo = BIBLE_BOOKS[book];
@@ -266,17 +315,11 @@ export class BibleService {
 		);
 
 		// Parse study content from the study panel
-		if (
-			includeStudyNotes ||
-			includeCrossReferences ||
-			includeMedia ||
-			includeIndexes
-		) {
+		if (includeStudyNotes || includeCrossReferences || includeMedia) {
 			BibleService.parseStudyContent($, sortedVerses, book, chapter, {
 				includeStudyNotes,
 				includeCrossReferences,
 				includeMedia,
-				includeIndexes,
 			});
 		}
 
@@ -322,15 +365,9 @@ export class BibleService {
 			includeStudyNotes: boolean;
 			includeCrossReferences: boolean;
 			includeMedia: boolean;
-			includeIndexes: boolean;
 		},
 	): void {
-		const {
-			includeStudyNotes,
-			includeCrossReferences,
-			includeMedia,
-			includeIndexes,
-		} = options;
+		const { includeStudyNotes, includeCrossReferences, includeMedia } = options;
 
 		// Create a map of verses by number for quick lookup
 		const verseMap = new Map<number, BibleVerse>();
@@ -442,41 +479,6 @@ export class BibleService {
 						verse.media = media;
 					}
 				}
-
-				// Indexes (publication references)
-				if (includeIndexes && className.includes("index")) {
-					const indexes = verse.indexes || [];
-					$content.find("a").each((_, link) => {
-						const $link = $(link);
-						const href = $link.attr("href") || "";
-						const title = $link.text().trim();
-
-						if (href && title) {
-							// Determine publication type from the reference
-							let publication = "Publication";
-							if (title.includes("Insight") || href.includes("/it-")) {
-								publication = "Insight on the Scriptures";
-							} else if (title.includes("Watchtower") || title.match(/^w\d+/)) {
-								publication = "The Watchtower";
-							} else if (title.includes("Awake") || title.match(/^g\d+/)) {
-								publication = "Awake!";
-							}
-
-							const absoluteUrl = href.startsWith("http")
-								? href
-								: `${WOL_BASE_URL}${href}`;
-
-							indexes.push({
-								title,
-								publication,
-								url: absoluteUrl,
-							});
-						}
-					});
-					if (indexes.length > 0) {
-						verse.indexes = indexes;
-					}
-				}
 			}
 		});
 
@@ -508,5 +510,154 @@ export class BibleService {
 				}
 			});
 		}
+	}
+
+	private static parseIndexPage(
+		html: string,
+		book: number,
+		chapter: number,
+		verseStart?: number,
+		verseEnd?: number,
+	): Map<number, BibleIndex[]> {
+		const $ = cheerio.load(html);
+		const bookInfo = BIBLE_BOOKS[book];
+		const isSingleChapter = bookInfo.chapters === 1;
+		const result = new Map<number, BibleIndex[]>();
+
+		let currentVerseNum: number | null = null;
+		let currentPubName: string | null = null;
+		let currentPubHref: string | null = null;
+		let pendingEntries: BibleIndex[] = [];
+
+		const flushPub = () => {
+			if (currentVerseNum !== null && currentPubName !== null) {
+				// Fallback: publication with no specific page detail
+				if (pendingEntries.length === 0 && currentPubHref) {
+					pendingEntries.push({
+						title: currentPubName,
+						publication: currentPubName,
+						url: currentPubHref,
+					});
+				}
+				const arr = result.get(currentVerseNum) || [];
+				arr.push(...pendingEntries);
+				result.set(currentVerseNum, arr);
+			}
+			currentPubName = null;
+			currentPubHref = null;
+			pendingEntries = [];
+		};
+
+		$("p.se, p.su, p.sk").each((_, el) => {
+			const $el = $(el);
+			const className = $el.attr("class") || "";
+
+			if (className.includes("se")) {
+				// Verse marker — flush previous data
+				flushPub();
+
+				const strong = $el.find("a.b[data-bid] strong").first();
+				const text = strong.text().trim();
+
+				if (isSingleChapter) {
+					const v = Number.parseInt(text, 10);
+					currentVerseNum =
+						!Number.isNaN(v) &&
+						(!verseStart || v >= verseStart) &&
+						(!verseEnd || v <= verseEnd)
+							? v
+							: null;
+				} else {
+					const m = text.match(/^(\d+):(\d+)$/);
+					if (m) {
+						const ch = Number.parseInt(m[1], 10);
+						const v = Number.parseInt(m[2], 10);
+						currentVerseNum =
+							ch === chapter &&
+							(!verseStart || v >= verseStart) &&
+							(!verseEnd || v <= verseEnd)
+								? v
+								: null;
+					} else {
+						currentVerseNum = null;
+					}
+				}
+				return;
+			}
+
+			if (currentVerseNum === null) return;
+
+			if (className.includes("su")) {
+				// Reference entries
+				$el.find("a").each((_, link) => {
+					const $link = $(link);
+					const href = $link.attr("href") || "";
+					const hasEm = $link.find("em").length > 0;
+					const linkText = $link
+						.text()
+						.replace(/\u00A0/g, " ")
+						.replace(/\s+/g, " ")
+						.trim()
+						.replace(/,+$/, "");
+
+					if (!linkText) return;
+
+					const absoluteUrl = href.startsWith("http")
+						? href
+						: `${WOL_BASE_URL}${href}`;
+
+					if (hasEm) {
+						flushPub();
+						const { pubName, detail } = splitPubDetail(linkText);
+						currentPubName = pubName;
+						currentPubHref = absoluteUrl;
+						if (detail) {
+							pendingEntries.push({
+								title: detail,
+								publication: currentPubName,
+								url: absoluteUrl,
+							});
+						}
+					} else if (currentPubName) {
+						pendingEntries.push({
+							title: linkText,
+							publication: currentPubName,
+							url: absoluteUrl,
+						});
+					}
+				});
+			} else if (className.includes("sk")) {
+				// Date/issue sub-entries
+				if (!currentPubName) return;
+
+				$el.find("a").each((_, link) => {
+					const $link = $(link);
+					const href = $link.attr("href") || "";
+					const linkText = $link
+						.text()
+						.replace(/\u00A0/g, " ")
+						.replace(/\s+/g, " ")
+						.trim()
+						.replace(/,+$/, "");
+
+					if (!linkText || !href) return;
+
+					const absoluteUrl = href.startsWith("http")
+						? href
+						: `${WOL_BASE_URL}${href}`;
+
+					pendingEntries.push({
+						title: linkText,
+						publication: currentPubName!,
+						url: absoluteUrl,
+					});
+				});
+			}
+		});
+
+		// Flush the last verse
+		flushPub();
+
+		return result;
 	}
 }

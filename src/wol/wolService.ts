@@ -1,3 +1,4 @@
+import * as cheerio from "cheerio";
 import {
 	type SearchOptions,
 	type Document,
@@ -237,48 +238,165 @@ export class WOLService {
 	}
 
 	private static convertToMarkdown(html: string): string {
-		return (
-			html
-				// Ensure images render with alt text when present - explicitly extract src and alt
-				.replace(/<img[^>]*>/gi, (imgTag) => {
-					const srcMatch = imgTag.match(/\bsrc=["']([^"']+)["']/i);
-					const altMatch = imgTag.match(/\balt=["']([^"']*)["']/i);
+		const $ = cheerio.load(html, { xml: false });
 
-					if (srcMatch) {
-						const src = srcMatch[1];
-						const alt = altMatch ? altMatch[1] : "";
-						return `![${alt}](${src})`;
+		const skipTags = new Set([
+			"script",
+			"style",
+			"noscript",
+			"input",
+			"button",
+			"textarea",
+			"select",
+			"fieldset",
+			"svg",
+		]);
+
+		const convertNode = (node: any): string => {
+			if (node.type === "text") {
+				return (node.data || "").replace(/\s+/g, " ");
+			}
+			if (node.type !== "tag" && node.type !== "root") return "";
+
+			const tag = (node.name || "").toLowerCase();
+			if (skipTags.has(tag)) return "";
+
+			const children = (node.children || [])
+				.map((c: any) => convertNode(c))
+				.join("");
+
+			switch (tag) {
+				case "h1":
+				case "h2":
+				case "h3":
+				case "h4":
+				case "h5":
+				case "h6": {
+					const level = parseInt(tag[1]);
+					const hashes = "#".repeat(level);
+					return `\n\n${hashes} ${children.trim()}\n\n`;
+				}
+				case "p":
+					return `${children.trim()}\n\n`;
+				case "strong":
+				case "b": {
+					const t = children.trim();
+					return t ? `**${t}**` : "";
+				}
+				case "em":
+				case "i": {
+					const t = children.trim();
+					return t ? `*${t}*` : "";
+				}
+				case "a": {
+					const href = node.attribs?.href || "";
+					const text = children.trim();
+					return href && text ? `[${text}](${href})` : text;
+				}
+				case "img": {
+					const src = node.attribs?.src || "";
+					const alt = node.attribs?.alt || "";
+					return src ? `![${alt}](${src})` : "";
+				}
+				case "br":
+					return "\n";
+				case "hr":
+					return "\n\n---\n\n";
+				case "ul": {
+					const items = (node.children || [])
+						.filter((c: any) => c.type === "tag" && c.name === "li")
+						.map((li: any) => `- ${convertNode(li).trim()}`)
+						.join("\n");
+					return `\n${items}\n\n`;
+				}
+				case "ol": {
+					const start = parseInt(node.attribs?.start || "1") || 1;
+					const items = (node.children || [])
+						.filter((c: any) => c.type === "tag" && c.name === "li")
+						.map(
+							(li: any, i: number) => `${start + i}. ${convertNode(li).trim()}`,
+						)
+						.join("\n");
+					return `\n${items}\n\n`;
+				}
+				case "li":
+					return children;
+				case "blockquote": {
+					const lines = children
+						.trim()
+						.split("\n")
+						.map((l: string) => `> ${l}`)
+						.join("\n");
+					return `\n${lines}\n\n`;
+				}
+				case "figure":
+					return `\n${children.trim()}\n\n`;
+				case "figcaption":
+					return `*${children.trim()}*\n`;
+				case "table": {
+					const rows: string[][] = [];
+					$(node)
+						.find("tr")
+						.each((_: number, tr: any) => {
+							const cells: string[] = [];
+							$(tr)
+								.find("td, th")
+								.each((__: number, cell: any) => {
+									cells.push(convertNode(cell).trim());
+								});
+							rows.push(cells);
+						});
+					if (rows.length === 0) return children;
+					const colCount = Math.max(...rows.map((r) => r.length));
+					const lines: string[] = [];
+					for (let i = 0; i < rows.length; i++) {
+						const padded = rows[i].concat(
+							Array(colCount - rows[i].length).fill(""),
+						);
+						lines.push(`| ${padded.join(" | ")} |`);
+						if (i === 0) {
+							lines.push(`| ${Array(colCount).fill("---").join(" | ")} |`);
+						}
 					}
-					return imgTag; // fallback if no src found
-				})
-				.replace(
-					/<h([1-6])[^>]*>(.*?)<\/h[1-6]>/gi,
-					(match, level, content) => {
-						const hashes = "#".repeat(parseInt(level));
-						return `${hashes} ${content}\n\n`;
-					},
-				)
-				.replace(/<p[^>]*>(.*?)<\/p>/gi, "$1\n\n")
-				.replace(/<strong[^>]*>(.*?)<\/strong>/gi, "**$1**")
-				.replace(/<em[^>]*>(.*?)<\/em>/gi, "*$1*")
-				.replace(/<a[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi, "[$2]($1)")
-				.replace(/<br[^>]*\/?>/gi, "\n")
-				.replace(/<[^>]*>/g, "")
-				.replace(/\n\n\n+/g, "\n\n")
-				.trim()
-		);
+					return `\n${lines.join("\n")}\n\n`;
+				}
+				case "div":
+				case "section":
+				case "article":
+				case "header":
+				case "footer":
+				case "main":
+				case "aside":
+				case "nav":
+					return `\n${children}\n`;
+				default:
+					return children;
+			}
+		};
+
+		const root = $.root()[0];
+		let result = convertNode(root);
+
+		// Collapse excessive newlines and trim
+		result = result.replace(/\n{3,}/g, "\n\n").trim();
+
+		// Fallback: if conversion produced empty/very short output, extract text
+		if (result.length < 20) {
+			const $article = $("article#article");
+			const $fallback = $article.length > 0 ? $article : $("body");
+			const fallbackText = $fallback.text();
+			result = fallbackText
+				.replace(/[\t ]*\n[\t ]*(\n[\t ]*)*/g, "\n\n")
+				.trim();
+		}
+
+		return result;
 	}
 
 	private static convertToPlainText(html: string): string {
-		return html
-			.replace(/<[^>]*>/g, "")
-			.replace(/&nbsp;/g, " ")
-			.replace(/&amp;/g, "&")
-			.replace(/&lt;/g, "<")
-			.replace(/&gt;/g, ">")
-			.replace(/&quot;/g, '"')
-			.replace(/&#39;/g, "'")
-			.replace(/\s+/g, " ")
-			.trim();
+		const $ = cheerio.load(html);
+		$("script, style, noscript").remove();
+		const text = $.root().text();
+		return text.replace(/\s+/g, " ").trim();
 	}
 }

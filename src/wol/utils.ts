@@ -91,8 +91,10 @@ export class URLBuilder {
 		if (!(host.endsWith("jw.org") && host.includes("wol"))) {
 			throw new Error("URL must be a jw.org WOL document");
 		}
-		if (!/\/wol\/d\//i.test(parsed.pathname)) {
-			throw new Error("URL must point to a WOL document (contains /wol/d/)");
+		if (!/\/wol\/(d|pc)\//i.test(parsed.pathname)) {
+			throw new Error(
+				"URL must point to a WOL document (contains /wol/d/ or /wol/pc/)",
+			);
 		}
 		const allowed = new Set(["q", "p"]);
 		const clean = new URLSearchParams();
@@ -290,7 +292,51 @@ export class ContentParser {
 				$img.replaceWith(`<p>${label}</p>`);
 			});
 
-			const contentHTML = ($root.html() || "").trim();
+			// Strip non-content UI/navigation elements
+			$root.find(".pswp, #galleryModalContainer, #questionContainer").remove();
+			$root.find("input, textarea, select, button, fieldset").remove();
+			$root.find(".cardChevron, .cardThumbnail").remove();
+			$root.find("span.parNum, span.pageNum, span.sectionIcon").remove();
+			$root.find(".alternatePresentation").remove();
+			$root.find("script, style, noscript").remove();
+
+			// Handle /wol/pc/ citation pages
+			const isCitationPage =
+				$root.hasClass("publicationCitation") ||
+				/\/wol\/pc\//.test(documentUrl);
+
+			let contentHTML: string;
+			if (isCitationPage) {
+				const parts: string[] = [];
+				$root.find("ul.results").each((_: number, ul: any) => {
+					const $ul = $(ul);
+					const $linkCard = $ul.find("li.linkCard").first();
+					const $result = $ul.find("li.result").first();
+					if ($linkCard.length === 0) return;
+
+					const $a = $linkCard.find("a").first();
+					const href = $a.attr("href") || "";
+					const fullHref = href.startsWith("/") ? `${origin}${href}` : href;
+					const title = ($a.find(".cardLine1").text() || "").trim();
+					const publication = ($a.find(".cardLine2").text() || "").trim();
+
+					if (title) {
+						parts.push(`<h3><a href="${fullHref}">${title}</a></h3>`);
+						if (publication) parts.push(`<p><em>${publication}</em></p>`);
+					}
+
+					if ($result.length > 0) {
+						$result.find("article.scalableui").each((__: number, art: any) => {
+							const html = $(art).html() || "";
+							if (html.trim()) parts.push(html);
+						});
+					}
+				});
+				contentHTML =
+					parts.length > 0 ? parts.join("\n") : ($root.html() || "").trim();
+			} else {
+				contentHTML = ($root.html() || "").trim();
+			}
 
 			// Publication and article names via navigation bar if available
 			let publication = "Unknown Publication";

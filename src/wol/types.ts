@@ -357,7 +357,7 @@ export const BibleTextSchema = z.object({
 		.optional()
 		.default(true)
 		.describe(
-			"Include links to related publications (Insight, Watchtower, etc.)",
+			"Include comprehensive links to related publications from the Index to Bible Publications (Insight, Watchtower, Awake!, books, etc.)",
 		),
 });
 
